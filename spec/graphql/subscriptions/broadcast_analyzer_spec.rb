@@ -83,6 +83,25 @@ describe GraphQL::Subscriptions::BroadcastAnalyzer do
     default_logger(BroadcastTestSchema::LOGGER)
   end
 
+  class BroadcastTestRaisingAnalyzerSchema < GraphQL::Schema
+    class RaisingAnalyzer < GraphQL::Analysis::Analyzer
+      def on_enter_field(node, parent, visitor)
+        raise GraphQL::AnalysisError, "Something went wrong during analysis"
+      end
+
+      def result
+        nil
+      end
+    end
+
+    query(BroadcastTestSchema::Query)
+    subscription(BroadcastTestSchema::Subscription)
+    orphan_types(BroadcastTestSchema::Shot, BroadcastTestSchema::Javelin)
+    use GraphQL::Subscriptions, broadcast: true, default_broadcastable: true
+    default_logger(BroadcastTestSchema::LOGGER)
+    query_analyzer(RaisingAnalyzer)
+  end
+
   def broadcastable?(query_str, schema: BroadcastTestSchema)
     schema.subscriptions.broadcastable?(query_str)
   end
@@ -96,6 +115,20 @@ describe GraphQL::Subscriptions::BroadcastAnalyzer do
     assert_nil broadcastable?("{ __typename }")
     assert_nil broadcastable?("mutation { __typename }")
     assert_equal true, broadcastable?("subscription { __typename }")
+  end
+
+  describe "when analysis doesn't finish" do
+    it "raises instead of returning nil when an analyzer raises AnalysisError" do
+      query_str = "subscription { throwableWasThrown { throwable { weight } } }"
+      err = assert_raises(RuntimeError) do
+        broadcastable?(query_str, schema: BroadcastTestRaisingAnalyzerSchema)
+      end
+      assert_includes err.message, "Query analysis didn't finish"
+    end
+
+    it "still returns nil for non-subscriptions" do
+      assert_nil broadcastable?("{ throwable { weight } }", schema: BroadcastTestRaisingAnalyzerSchema)
+    end
   end
 
   describe "when the default is false" do

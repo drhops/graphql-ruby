@@ -229,14 +229,19 @@ module GraphQL
       Schema::Member::BuildType.camelize(event_or_arg_name.to_s)
     end
 
-    # @return [Boolean] if true, then a query like this one would be broadcasted
+    # @return [Boolean, nil] if true, then a query like this one would be broadcasted; `nil` if the operation isn't a subscription
+    # @raise [RuntimeError] if the query is invalid, or if query analysis didn't finish, leaving the result undetermined
     def broadcastable?(query_str, **query_options)
       query = @schema.query_class.new(@schema, query_str, **query_options)
       if !query.valid?
         raise "Invalid query: #{query.validation_errors.map(&:to_h).inspect}"
       end
       GraphQL::Analysis.analyze_query(query, @schema.query_analyzers)
-      query.context.namespace(:subscriptions)[:subscription_broadcastable]
+      subscriptions_namespace = query.context.namespace(:subscriptions)
+      if query.subscription? && !subscriptions_namespace.key?(:subscription_broadcastable)
+        raise "Query analysis didn't finish, so this query's broadcastability is unknown. (Analysis may have timed out or raised GraphQL::AnalysisError.)"
+      end
+      subscriptions_namespace[:subscription_broadcastable]
     end
 
     # Called during execution when a new `subscription ...` operation is received
