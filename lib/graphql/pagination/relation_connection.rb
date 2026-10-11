@@ -29,8 +29,12 @@ module GraphQL
       end
 
       def has_next_page
-        # Load the page now so its extra row answers this, too
-        load_nodes if @has_next_page.nil? && peek_next_page? && page_selected?
+        # If the query loads the page anyway, load it now so its extra row answers this
+        if @has_next_page.nil? && peek_next_page? &&
+            (lookahead.selects?(:nodes) || lookahead.selects?(:edges) ||
+              page_info_selection.selects?(:start_cursor) || page_info_selection.selects?(:end_cursor))
+          load_nodes
+        end
         if @has_next_page.nil?
           @has_next_page = if before_offset && before_offset > 0
             true
@@ -268,18 +272,8 @@ module GraphQL
         @peek_next_page = first&.positive? && last.nil? && before.nil? && page_info_selection.selects?(:has_next_page)
       end
 
-      # True if the query loads the page anyway
-      def page_selected?
-        selections.selects?(:nodes) || selections.selects?(:edges) ||
-          page_info_selection.selects?(:start_cursor) || page_info_selection.selects?(:end_cursor)
-      end
-
-      def selections
-        lookahead || GraphQL::Execution::Lookahead::NULL_LOOKAHEAD
-      end
-
       def page_info_selection
-        @page_info_selection ||= selections.selection(:page_info)
+        @page_info_selection ||= (lookahead || GraphQL::Execution::Lookahead::NULL_LOOKAHEAD).selection(:page_info)
       end
     end
   end
