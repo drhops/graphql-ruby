@@ -415,7 +415,7 @@ module GraphQL
           when Schema::Field::ConnectionExtension
             conns = ctx.schema.connections
             lookahead = @arguments[:lookahead]
-            # The extension's memo is the field's arguments without any extras it added
+            # The memo omits the extension's extras (`:lookahead`)
             conn_arguments = memos[@finish_extension_idx] || @arguments
             @field_results.map!.each_with_index do |value, idx|
               object = @extended.object[idx]
