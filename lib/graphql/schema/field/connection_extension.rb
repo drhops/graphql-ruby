@@ -21,7 +21,7 @@ module GraphQL
           next_args.delete(:before)
           next_args.delete(:after)
           # The lookahead is only for the connection object, not the field's arguments
-          original_arguments = added_extras ? arguments.except(*added_extras) : arguments
+          original_arguments = added_extras ? arguments.reject { |k, _v| added_extras.include?(k) } : arguments
           yield(object || objects, next_args, original_arguments)
         end
 

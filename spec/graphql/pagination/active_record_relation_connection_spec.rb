@@ -366,7 +366,7 @@ if testing_rails?
 
         it "loads the page once and doesn't count when nodes and hasNextPage resolve in separate Fibers" do
           connection = SlowCountingRelationConnection.new(Food.all, first: 2, max_page_size: 10, context: async_context)
-          connection.lookahead = Class.new { def selects?(_field_name) = true; def selection(_field_name) = self }.new
+          connection.lookahead = Class.new { def selects?(_field_name); true; end; def selection(_field_name); self; end }.new
           nodes = nil
           has_next_page = nil
 
