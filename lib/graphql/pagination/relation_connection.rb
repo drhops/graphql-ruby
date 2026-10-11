@@ -29,6 +29,8 @@ module GraphQL
       end
 
       def has_next_page
+        # Loading the page sets `@has_next_page` from its extra row, no matter which field resolves first.
+        load_nodes if @has_next_page.nil? && peek_next_page?
         if @has_next_page.nil?
           @has_next_page = if before_offset && before_offset > 0
             true
@@ -242,11 +244,29 @@ module GraphQL
           # `AsyncDataloader` may resolve sibling fields (eg, `edges` and `pageInfo`)
           # in separate Fibers, so several callers can get here before `@nodes` is set.
           (@load_monitor ||= Monitor.new).synchronize do
-            @nodes ||= limited_nodes.to_a
+            @nodes ||= load_page
           end
         else
-          @nodes = limited_nodes.to_a
+          @nodes = load_page
         end
+      end
+
+      # For plain forward pagination, fetch one row past `first`
+      # so that `has_next_page` doesn't need another query.
+      # (Already-loaded arrays are skipped: their next-page check doesn't query.)
+      def load_page
+        page = limited_nodes
+        return page.to_a if page.is_a?(Array) || !peek_next_page?
+
+        peek_limit = [first + 1, @sliced_nodes_limit].compact.min
+        rows = set_limit(page, peek_limit).to_a
+        @has_next_page = rows.size > first
+        rows.first(first)
+      end
+
+      # `last` and `before` page differently, so they keep the separate `has_next_page` check.
+      def peek_next_page?
+        first&.positive? && last.nil? && before.nil?
       end
     end
   end

@@ -115,7 +115,7 @@ if testing_rails?
       assert_equal true, results["data"]["items"]["pageInfo"]["hasNextPage"]
       assert_equal false, results["data"]["items"]["pageInfo"]["hasPreviousPage"]
       assert_equal 1, log.split("\n").size, "It runs only one query"
-      assert_equal 1, log.squeeze.scan("SELECT 1 AS").size, "It's an exist query (#{log.inspect})"
+      assert_includes log, '["LIMIT", 4]', "It loads the page plus one row (#{log.inspect})"
 
       log = with_active_record_log do
         results = schema.execute("{
@@ -172,10 +172,49 @@ if testing_rails?
           }
         }")
       end
-      # This currently runs one query to load the nodes, then another one to count _just beyond_ the nodes.
-      # A better implementation would load `first + 1` nodes and use that to set `has_next_page`.
       assert_equal ["Item", "Item", "Item"], results["data"]["items"]["nodes"].map { |i| i["__typename"] }
-      assert_equal 2, log.split("\n").size, "It runs two queries -- TODO this could be better"
+      assert_equal true, results["data"]["items"]["pageInfo"]["hasNextPage"]
+      assert_equal 1, log.split("\n").size, "It loads `first + 1` nodes and uses the extra one for hasNextPage"
+    end
+
+    describe "loading one extra node for hasNextPage" do
+      def page_info_and_nodes(connection)
+        results = nil
+        log = with_active_record_log do
+          results = [connection.has_next_page, connection.nodes.map(&:name)]
+        end
+        [*results, log.split("\n").size]
+      end
+
+      it "runs one query when hasNextPage is resolved before nodes" do
+        connection = GraphQL::Pagination::ActiveRecordRelationConnection.new(Food.order(:id), first: 2, max_page_size: 10)
+        has_next_page, names, queries = page_info_and_nodes(connection)
+
+        assert_equal true, has_next_page
+        assert_equal Food.order(:id).limit(2).map(&:name), names
+        assert_equal 1, queries
+      end
+
+      it "returns false for a full last page without a second query" do
+        total = Food.count
+        connection = GraphQL::Pagination::ActiveRecordRelationConnection.new(Food.order(:id), first: total, max_page_size: total)
+        has_next_page, names, queries = page_info_and_nodes(connection)
+
+        assert_equal false, has_next_page
+        assert_equal total, names.size
+        assert_equal 1, queries
+      end
+
+      it "doesn't peek past a limit already on the relation" do
+        [[3, 2, true], [2, 2, false], [1, 2, false]].each do |relation_limit, first, expected|
+          connection = GraphQL::Pagination::ActiveRecordRelationConnection.new(Food.order(:id).limit(relation_limit), first: first, max_page_size: 10)
+          has_next_page, names, queries = page_info_and_nodes(connection)
+
+          assert_equal expected, has_next_page, "limit(#{relation_limit}), first: #{first}"
+          assert_equal [relation_limit, first].min, names.size
+          assert_equal 1, queries
+        end
+      end
     end
 
     describe "already-loaded ActiveRecord relations" do
@@ -287,6 +326,26 @@ if testing_rails?
 
           assert_equal 1, log.split("\n").size, "It runs one query"
           assert_equal [2, 2, 2], results.map(&:size)
+        end
+
+        it "loads the page once and doesn't count when nodes and hasNextPage resolve in separate Fibers" do
+          connection = SlowCountingRelationConnection.new(Food.all, first: 2, max_page_size: 10, context: async_context)
+          nodes = nil
+          has_next_page = nil
+
+          log = with_active_record_log do
+            Sync do
+              [
+                Async { has_next_page = connection.has_next_page },
+                Async { nodes = connection.nodes },
+              ].each(&:wait)
+            end
+          end
+
+          assert_equal 1, log.split("\n").size, "It runs one query"
+          assert_nil connection.count_calls
+          assert_equal 2, nodes.size
+          assert_equal true, has_next_page
         end
 
         it "counts the relation only once when page fields resolve in separate Fibers" do
