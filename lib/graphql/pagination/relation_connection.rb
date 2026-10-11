@@ -267,16 +267,22 @@ module GraphQL
       # Only peek when the query asks for `hasNextPage`.
       # `last` and `before` page differently, so they keep the separate `has_next_page` check.
       def peek_next_page?
-        first&.positive? && last.nil? && before.nil? &&
-          !!lookahead && lookahead.selection(:page_info).selects?(:has_next_page)
+        return @peek_next_page if defined?(@peek_next_page)
+        @peek_next_page = first&.positive? && last.nil? && before.nil? && page_info_selection.selects?(:has_next_page)
       end
 
       # True if the query will load this page anyway
       def page_selected?
-        return false unless lookahead
-        page_info = lookahead.selection(:page_info)
-        lookahead.selects?(:nodes) || lookahead.selects?(:edges) ||
-          page_info.selects?(:start_cursor) || page_info.selects?(:end_cursor)
+        selections.selects?(:nodes) || selections.selects?(:edges) ||
+          page_info_selection.selects?(:start_cursor) || page_info_selection.selects?(:end_cursor)
+      end
+
+      def selections
+        lookahead || GraphQL::Execution::Lookahead::NULL_LOOKAHEAD
+      end
+
+      def page_info_selection
+        @page_info_selection ||= selections.selection(:page_info)
       end
     end
   end

@@ -20,12 +20,8 @@ module GraphQL
           next_args.delete(:last)
           next_args.delete(:before)
           next_args.delete(:after)
-          original_arguments = arguments
-          if added_extras&.include?(:lookahead)
-            # The lookahead is only for the connection object, not the field's arguments
-            original_arguments = arguments.dup
-            original_arguments.delete(:lookahead)
-          end
+          # The lookahead is only for the connection object, not the field's arguments
+          original_arguments = added_extras ? arguments.except(*added_extras) : arguments
           yield(object || objects, next_args, original_arguments)
         end
 
@@ -34,9 +30,7 @@ module GraphQL
           lookahead = arguments[:lookahead]
           context.query.after_lazy(value) do |resolved_value|
             connection = context.schema.connections.populate_connection(field, object.object, resolved_value, original_arguments, context)
-            if connection.is_a?(GraphQL::Pagination::Connection)
-              connection.lookahead ||= lookahead
-            end
+            connection.lookahead ||= lookahead if connection
             connection
           end
         end
