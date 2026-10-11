@@ -205,6 +205,22 @@ if testing_rails?
         assert_equal 1, queries.size
       end
 
+      it "doesn't peek when hasNextPage isn't selected" do
+        items, queries = run_logged("{ items(first: 3) { nodes { name } } }")
+
+        assert_equal 3, items["nodes"].size
+        assert_equal 1, queries.size
+        assert_includes queries.first, '["LIMIT", 3]'
+      end
+
+      it "runs one query when only a cursor loads the page" do
+        items, queries = run_logged("{ items(first: 3) { pageInfo { hasNextPage endCursor } } }")
+
+        assert_equal true, items["pageInfo"]["hasNextPage"]
+        assert_equal 1, queries.size, queries.inspect
+        assert_includes queries.first, '["LIMIT", 4]'
+      end
+
       it "doesn't peek when nodes are skipped" do
         items, queries = run_logged("{ items(first: 3) { pageInfo { hasNextPage } nodes @skip(if: true) { name } } }")
 
@@ -350,7 +366,7 @@ if testing_rails?
 
         it "loads the page once and doesn't count when nodes and hasNextPage resolve in separate Fibers" do
           connection = SlowCountingRelationConnection.new(Food.all, first: 2, max_page_size: 10, context: async_context)
-          connection.lookahead = Class.new { def selects?(_field_name); true; end }.new
+          connection.lookahead = Class.new { def selects?(_field_name) = true; def selection(_field_name) = self }.new
           nodes = nil
           has_next_page = nil
 
