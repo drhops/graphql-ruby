@@ -115,7 +115,7 @@ if testing_rails?
       assert_equal true, results["data"]["items"]["pageInfo"]["hasNextPage"]
       assert_equal false, results["data"]["items"]["pageInfo"]["hasPreviousPage"]
       assert_equal 1, log.split("\n").size, "It runs only one query"
-      assert_includes log, '["LIMIT", 4]', "It loads the page plus one row (#{log.inspect})"
+      assert_equal 1, log.squeeze.scan("SELECT 1 AS").size, "It's an exist query (#{log.inspect})"
 
       log = with_active_record_log do
         results = schema.execute("{
@@ -178,41 +178,61 @@ if testing_rails?
     end
 
     describe "loading one extra node for hasNextPage" do
-      def page_info_and_nodes(connection)
+      def run_logged(query_str, run_schema = schema)
         results = nil
         log = with_active_record_log do
-          results = [connection.has_next_page, connection.nodes.map(&:name)]
+          results = run_schema.execute(query_str)
         end
-        [*results, log.split("\n").size]
+        [results["data"]["items"], log.split("\n")]
       end
 
-      it "runs one query when hasNextPage is resolved before nodes" do
-        connection = GraphQL::Pagination::ActiveRecordRelationConnection.new(Food.order(:id), first: 2, max_page_size: 10)
-        has_next_page, names, queries = page_info_and_nodes(connection)
+      it "runs one query when pageInfo is selected before nodes or edges" do
+        ["nodes { name }", "edges { node { name } }"].each do |page_selection|
+          items, queries = run_logged("{ items(first: 3) { pageInfo { hasNextPage } #{page_selection} } }")
 
-        assert_equal true, has_next_page
-        assert_equal Food.order(:id).limit(2).map(&:name), names
-        assert_equal 1, queries
+          assert_equal true, items["pageInfo"]["hasNextPage"]
+          assert_equal 3, (items["nodes"] || items["edges"]).size
+          assert_equal 1, queries.size, "#{page_selection}: #{queries.inspect}"
+          assert_includes queries.first, '["LIMIT", 4]'
+        end
       end
 
       it "returns false for a full last page without a second query" do
-        total = Food.count
-        connection = GraphQL::Pagination::ActiveRecordRelationConnection.new(Food.order(:id), first: total, max_page_size: total)
-        has_next_page, names, queries = page_info_and_nodes(connection)
+        items, queries = run_logged("{ items(first: 10, maxPageSizeOverride: 10) { pageInfo { hasNextPage } nodes { name } } }")
 
-        assert_equal false, has_next_page
-        assert_equal total, names.size
-        assert_equal 1, queries
+        assert_equal false, items["pageInfo"]["hasNextPage"]
+        assert_equal 10, items["nodes"].size
+        assert_equal 1, queries.size
       end
 
-      it "doesn't peek past a limit already on the relation" do
-        [[3, 2, true], [2, 2, false], [1, 2, false]].each do |relation_limit, first, expected|
-          connection = GraphQL::Pagination::ActiveRecordRelationConnection.new(Food.order(:id).limit(relation_limit), first: first, max_page_size: 10)
-          has_next_page, names, queries = page_info_and_nodes(connection)
+      it "doesn't peek when nodes are skipped" do
+        items, queries = run_logged("{ items(first: 3) { pageInfo { hasNextPage } nodes @skip(if: true) { name } } }")
 
-          assert_equal expected, has_next_page, "limit(#{relation_limit}), first: #{first}"
-          assert_equal [relation_limit, first].min, names.size
-          assert_equal 1, queries
+        assert_equal true, items["pageInfo"]["hasNextPage"]
+        assert_equal 1, queries.size
+        assert_equal 1, queries.first.squeeze.scan("SELECT 1 AS").size, "It's an exist query (#{queries.inspect})"
+      end
+
+      it "respects a limit already on the relation" do
+        cursor = schema.execute("{ items(first: 1) { pageInfo { endCursor } } }")["data"]["items"]["pageInfo"]["endCursor"]
+
+        [1, 2, 3, 5].each do |relation_limit|
+          limited_schema = ConnectionAssertions.build_schema(
+            connection_class: GraphQL::Pagination::ActiveRecordRelationConnection,
+            total_count_connection_class: RelationConnectionWithTotalCount,
+            get_items: -> { Food.all.limit(relation_limit) }
+          )
+          [[2, nil], [2, cursor], [3, cursor]].each do |first, after|
+            args = "first: #{first}#{after ? ", after: #{after.inspect}" : ""}"
+            peeked, peeked_queries = run_logged("{ items(#{args}) { pageInfo { hasNextPage } nodes { name } } }", limited_schema)
+            counted, _queries = run_logged("{ items(#{args}) { pageInfo { hasNextPage } } }", limited_schema)
+
+            # A page cut short by the relation's limit is the last one.
+            # (The exist query alone ignores the relation's limit.)
+            expected = relation_limit < first ? false : counted["pageInfo"]["hasNextPage"]
+            assert_equal expected, peeked["pageInfo"]["hasNextPage"], "limit(#{relation_limit}), #{args}"
+            assert_equal 1, peeked_queries.size, "limit(#{relation_limit}), #{args}: #{peeked_queries.inspect}"
+          end
         end
       end
     end
@@ -330,6 +350,7 @@ if testing_rails?
 
         it "loads the page once and doesn't count when nodes and hasNextPage resolve in separate Fibers" do
           connection = SlowCountingRelationConnection.new(Food.all, first: 2, max_page_size: 10, context: async_context)
+          connection.lookahead = Class.new { def selects?(_field_name); true; end }.new
           nodes = nil
           has_next_page = nil
 

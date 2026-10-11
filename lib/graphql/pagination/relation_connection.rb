@@ -29,8 +29,8 @@ module GraphQL
       end
 
       def has_next_page
-        # Loading the page sets `@has_next_page` from its extra row, no matter which field resolves first.
-        load_nodes if @has_next_page.nil? && peek_next_page?
+        # If the page will be loaded anyway, load it now so that its extra row answers this, too.
+        load_nodes if @has_next_page.nil? && peek_next_page? && page_selected?
         if @has_next_page.nil?
           @has_next_page = if before_offset && before_offset > 0
             true
@@ -253,13 +253,13 @@ module GraphQL
 
       # For plain forward pagination, fetch one row past `first`
       # so that `has_next_page` doesn't need another query.
-      # (Already-loaded arrays are skipped: their next-page check doesn't query.)
+      # (Already-loaded arrays are skipped because their next-page check doesn't query,
+      # and so are pages cut short by the relation's own limit because they can't have a next page.)
       def load_page
         page = limited_nodes
-        return page.to_a if page.is_a?(Array) || !peek_next_page?
+        return page.to_a if page.is_a?(Array) || !peek_next_page? || relation_limit(page) != first
 
-        peek_limit = [first + 1, @sliced_nodes_limit].compact.min
-        rows = set_limit(page, peek_limit).to_a
+        rows = set_limit(page, first + 1).to_a
         @has_next_page = rows.size > first
         rows.first(first)
       end
@@ -267,6 +267,10 @@ module GraphQL
       # `last` and `before` page differently, so they keep the separate `has_next_page` check.
       def peek_next_page?
         first&.positive? && last.nil? && before.nil?
+      end
+
+      def page_selected?
+        !!lookahead && (lookahead.selects?(:nodes) || lookahead.selects?(:edges))
       end
     end
   end
